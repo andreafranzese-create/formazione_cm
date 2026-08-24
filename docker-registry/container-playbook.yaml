@@ -1,0 +1,53 @@
+- name: Installa docker e crea una registry
+  hosts: registry
+  become: yes
+  vars:
+    registry_host: 192.168.56.10
+
+  tasks:
+    - name: Installa Docker
+      ansible.builtin.package:
+        name: docker.io
+        state: present
+        update_cache: true
+
+    - name: Crea la directory dati del registry
+      ansible.builtin.file:
+        path: /opt/registry/data
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Avvia il registry
+      community.docker.docker_container:
+        name: registry
+        image: registry:2
+        state: started
+        restart_policy: always
+        ports:
+          - "5000:5000"
+        volumes:
+          - /opt/registry/data:/var/lib/registry
+
+    - name: Crea /etc/docker
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: Configura daemon.json
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+        content: |
+          {
+            "insecure-registries": ["{{ registry_host }}:5000"]
+          }
+      notify: Riavvia Docker
+
+  handlers:
+    - name: Riavvia Docker
+      ansible.builtin.service:
+        name: docker
+        state: restarted
