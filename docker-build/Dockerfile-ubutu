@@ -1,0 +1,26 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && \
+    apt-get install -y sudo openssh-server && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/run/sshd && \
+    sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i -E 's/^#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    echo 'AllowUsers andrea' >> /etc/ssh/sshd_config
+
+RUN useradd --create-home --shell /bin/bash --groups sudo andrea && \
+    echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    mkdir -p /home/andrea/.ssh && \
+    chmod 700 /home/andrea/.ssh && \
+    chown andrea:andrea /home/andrea/.ssh
+
+COPY id_key_andrea.pub /home/andrea/.ssh/authorized_keys
+
+RUN chmod 600 /home/andrea/.ssh/authorized_keys && \
+    chown andrea:andrea /home/andrea/.ssh/authorized_keys
+
+EXPOSE 22
+
+CMD ["/usr/sbin/sshd", "-D", "-e"]

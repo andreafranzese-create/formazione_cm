@@ -1,0 +1,54 @@
+- name: Build immagini docker con OS diversi
+  hosts: server3
+  become: true
+  gather_facts: false
+
+  vars:
+    immagini:
+      - name: ubuntu-ssh
+        container_name: ubuntu-ssh-server
+        Dockerfile: Dockerfile-ubuntu
+        port: 2222
+      - name: rocky-ssh
+        container_name: rocky-ssh-server
+        Dockerfile: Dockerfile-rocky
+        port: 2223
+
+  tasks:
+    - name: Build immagine docker
+      community.docker.docker_image:
+        name: "{{ item.name }}"
+        tag: latest
+        source: build
+        build:
+          path: /root/immagini
+          dockerfile: "{{ item.Dockerfile }}"
+      loop: "{{ immagini }}"
+
+    - name: Build container
+      community.docker.docker_container:
+        name: "{{ item.container_name }}"
+        image: "{{ item.name }}:latest"
+        state: started
+        restart_policy: unless-stopped
+        published_ports:
+          - "{{ item.port }}:22"
+      loop: "{{ immagini }}"
+
+    - name: Test connessione ssh e sudo Ubuntu
+      ansible.builtin.command:
+        cmd: "ssh -i /home/andrea/.ssh/id_key_andrea -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null andrea@127.0.0.1 'sudo whoami'"
+      register: test_ssh_ubuntu
+      changed_when: false
+
+    - name: Test connessione ssh e sudo Rocky
+      ansible.builtin.command:
+        cmd: "ssh -i /home/andrea/.ssh/id_key_andrea -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null andrea@127.0.0.1 'sudo whoami'"
+      register: test_ssh_rocky
+      changed_when: false
+
+    - name: Stampa risultati
+      ansible.builtin.debug:
+        msg:
+          - "Ubuntu: {{ test_ssh_ubuntu.stdout }}"
+          - "Rocky: {{ test_ssh_rocky.stdout }}"
