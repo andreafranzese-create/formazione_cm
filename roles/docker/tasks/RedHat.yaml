@@ -1,0 +1,13 @@
+- name: Aggiungi il repository Docker CE
+  ansible.builtin.yum_repository:
+    name: docker-ce-stable
+    description: Docker CE Stable
+    baseurl: "https://download.docker.com/linux/centos/{{ ansible_distribution_major_version }}/$basearch/stable"
+    gpgcheck: true
+    gpgkey: https://download.docker.com/linux/centos/gpg
+    enabled: true
+
+- name: Installa l'SDK Python di Docker
+  ansible.builtin.package:
+    name: python3-pip
+    state: present

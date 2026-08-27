@@ -1,0 +1,7 @@
+- containers.podman.podman_image:
+    name: "{{ item.name }}"
+    tag: "1.0"
+    push: true
+    push_args:
+      dest: "{{ item.repo }}"
+  loop: "{{ images }}"

@@ -1,0 +1,23 @@
+---
+dockerfile:
+  - name: rocky
+    image: rockylinux/rockylinux:9
+    packages:
+      - sudo 
+      - openssh-server
+    distribution: RedHat
+    host_port: 2222
+    port: 22
+  - name: ubuntu
+    image: ubuntu:24.04
+    packages:
+      - sudo
+      - openssh-server
+    distribution: Debian
+    host_port: 2223
+    port: 22
+
+user:
+  name: andrea
+  shell: /bin/bash
+

@@ -1,0 +1,42 @@
+---
+- name: Crea l'utente e genera la sua chiave SSH
+  ansible.builtin.user:
+    name: "{{ user.name }}"
+    shell: "{{ user.shell }}"
+    create_home: true
+    generate_ssh_key: true
+    ssh_key_type: ed25519
+    ssh_key_file: ".ssh/id_key_{{ user.name }}"
+ 
+- name: Crea la directory di build
+  ansible.builtin.file:
+    path: "/home/{{ user.name }}/build"
+    state: directory
+    mode: '0755'
+ 
+- name: Copia la chiave pubblica nel build context
+  ansible.builtin.copy:
+    src: "/home/{{ user.name }}/.ssh/id_key_{{ user.name }}.pub"
+    dest: "/home/{{ user.name }}/build/id_key_{{ user.name }}.pub"
+    mode: '0644'
+    remote_src: true
+ 
+- name: Genera il Dockerfile
+  ansible.builtin.template:
+    src: Dockerfile.j2
+    dest: "/home/{{ user.name }}/build/Dockerfile-{{ item.name }}" 
+    mode: '0644'
+  loop: "{{ dockerfile }}"
+
+- name: Rileva il container engine
+  ansible.builtin.shell: command -v podman || command -v docker
+  register: engine_check
+  changed_when: false
+  failed_when: engine_check.rc != 0
+
+- name: Imposta container_engine
+  ansible.builtin.set_fact:
+    container_engine: "{{ container_engine | default(engine_check.stdout | basename) }}"
+
+- name: Builda l'immagine e crea i container
+  ansible.builtin.include_tasks: "{{ container_engine }}.yaml"

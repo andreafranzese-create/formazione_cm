@@ -1,0 +1,21 @@
+---
+- name: Configura il repository specifico della distribuzione
+  ansible.builtin.include_tasks: "{{ ansible_os_family }}.yaml"
+
+- name: Installa Docker Engine
+  ansible.builtin.package:
+    name: "{{ docker_packages }}"
+    state: present
+    update_cache: true
+
+- name: Avvia e abilita il servizio Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Aggiungi l'utente al gruppo docker
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    groups: docker
+    append: true

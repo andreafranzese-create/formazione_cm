@@ -1,0 +1,19 @@
+- name: Build immagine con Podman
+  containers.podman.podman_image:
+    name: "{{ item.name }}-ssh"
+    tag: "latest"
+    path: "/home/{{ user.name }}/build"
+    state: build
+    build:
+      file: "/home/{{ user.name }}/build/Dockerfile-{{ item.name }}"
+  loop: "{{ dockerfile }}"
+
+- name: Crea i container con Podman
+  containers.podman.podman_container:
+    name: "{{ item.name }}-ssh-server:latest"
+    image: "localhost/{{ item.name }}-ssh"
+    pull: never
+    state: started
+    ports:
+      - "{{ item.host_port }}:{{ item.port }}"
+  loop: "{{ dockerfile }}"

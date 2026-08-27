@@ -1,0 +1,12 @@
+- name: Tagga l'immagine per il registry locale
+  community.docker.docker_image_tag:
+    name: "{{ item.name }}"
+    tag: "{{ item.tag }}"
+    repository:
+      - "{{ item.repo }}/{{ item.name }}:{{ item.tag }}"
+  loop: "{{ images }}"
+
+- name: Push sul registry
+  community.docker.docker_image_push:
+    name: "{{ item.repo }}/{{ item.name }}:{{ item.tag }}"
+  loop: "{{ images }}"

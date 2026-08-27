@@ -1,0 +1,27 @@
+- name: Avvia il registry
+  community.docker.docker_container:
+    name: "{{ container.name }}"
+    image: "registry:{{ container.image_tag }}"
+    state: "{{ container.state }}"
+    restart_policy: "{{ container.restart_policy }}"
+    ports:
+      - "{{ container.host_port }}:{{ container.container_port }}"
+    volumes:
+      - "{{ directory.path }}:/var/lib/registry"
+
+- name: Crea /etc/docker
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: '0755'
+
+- name: Configura daemon.json
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    mode: '0644'
+    content: |
+      {
+        "insecure-registries": ["{{ registry_host }}:{{ container.host_port }}"]
+      }
+  notify: Riavvia Docker
+

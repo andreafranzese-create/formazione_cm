@@ -1,0 +1,16 @@
+---
+directory:
+  path: /opt/registry/data
+  owner: root
+  group: root
+  mode: '0755'
+
+container:
+  name: registry
+  image_tag: 2
+  restart_policy: always
+  state: started
+  host_port: 5000
+  container_port: 5000
+    
+registry_host: 192.168.56.10

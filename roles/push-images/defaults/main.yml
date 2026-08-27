@@ -1,0 +1,8 @@
+---
+images:
+  - name: rocky-ssh
+    tag: latest
+    repo: localhost:5000
+  - name: ubuntu-ssh
+    tag: latest
+    repo: localhost:5000

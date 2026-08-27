@@ -1,0 +1,13 @@
+---
+- name: Rileva il container engine
+  ansible.builtin.shell: command -v podman || command -v docker
+  register: engine_check
+  changed_when: false
+  failed_when: engine_check.rc != 0
+
+- name: Imposta container_engine
+  ansible.builtin.set_fact:
+    container_engine: "{{ container_engine | default(engine_check.stdout | basename) }}"
+
+- name: Tagga e pusha l'immagine sul repository locale
+  ansible.builtin.include_tasks: "{{ container_engine }}.yaml"

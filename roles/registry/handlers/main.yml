@@ -1,0 +1,5 @@
+---
+  - name: Riavvia Docker
+    ansible.builtin.service:
+      name: docker
+      state: restarted

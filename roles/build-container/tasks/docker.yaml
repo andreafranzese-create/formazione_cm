@@ -1,0 +1,16 @@
+- name: Build immagine con Docker
+  community.docker.docker_image_build:
+    name: "{{ item.name }}-ssh"
+    path: "/home/{{ user.name }}/build"
+    dockerfile: "Dockerfile-{{ item.name }}"
+  loop: "{{ dockerfile }}"
+
+- name: Crea i container con Docker
+  community.docker.docker_container:
+    name: "{{ item.name }}-ssh-server"
+    image: "{{ item.name }}-ssh"
+    pull: never
+    published_ports:
+      - "{{ item.host_port }}:{{ item.port }}"
+    state: started
+  loop: "{{ dockerfile }}"
