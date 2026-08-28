@@ -1,0 +1,23 @@
+- name: Crea il container con ssh e docker
+  hosts: debian
+  become: true
+  
+  tasks:
+    - name: Build immagine docker
+      community.docker.docker_image_build:
+        name: docker-ssh
+        tag: latest
+        path: /home/andrea/build
+        dockerfile: Dockerfile 
+
+    - name: Avvia il container
+      community.docker.docker_container:
+        name: docker-ssh
+        image: docker-ssh
+        pull: never
+        state: started
+        privileged: true
+        published_ports:
+          - "2224:22"
+        volumes:
+          - /home/andrea/overlay:/var/lib/docker

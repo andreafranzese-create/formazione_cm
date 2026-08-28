@@ -1,0 +1,22 @@
+- hosts: rocky
+  become: true
+  vars_files:
+    - vault.yaml
+  tasks:
+    - name: Avvia l'agent jenkins
+      containers.podman.podman_container:
+        name: ansible
+        image: ansible
+        pull: never
+        network: network_1
+        ip: "10.0.0.4"
+        security_opt:
+          - "label=disable"
+        env: 
+          JENKINS_URL: "http://10.0.0.2:8080"
+          JENKINS_AGENT_NAME: ansible
+          JENKINS_SECRET: "{{ jenkins_secret }}"
+          JENKINS_AGENT_WORKDIR: /home/jenkins/agent
+        volumes:
+          - /srv/ansible:/ansible
+        state: started

@@ -1,0 +1,16 @@
+- name: Deploy container 
+  hosts: server
+  become: true
+  gather_facts: false
+  vars:
+    image: 192.168.56.14:5000/step2docker:latest
+  
+  tasks:
+    - name: Avvia il container
+      community.docker.docker_container:
+        name: step2docker
+        image: "{{ image }}"
+        state: started
+        recreate: true
+        published_ports:
+          - "2224:22"

@@ -1,0 +1,23 @@
+pipeline {
+    agent { label 'podman' }
+
+    environment {
+        IMAGE = "192.168.56.14:5000/docker-ssh:${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('build and push') {
+            steps {
+                sh "podman build -t ${env.IMAGE} /home/jenkins/agent"
+                sh "podman push ${env.IMAGE}"
+            }
+        }
+
+        stage('deploy immagine') {
+            agent { label 'ansible' }
+            steps {
+                sh "ansible-playbook -i /ansible/inventario -e image=${env.IMAGE} /ansible/playbook-pipeline.yaml"
+            }
+        }
+    }
+}

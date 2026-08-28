@@ -1,0 +1,9 @@
+FROM jenkins/inbound-agent:latest
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y rsync ansible python3-netaddr git curl ca-certificates  && \
+    rm -rf /var/lib/apt/lists/*
+
+USER jenkins
