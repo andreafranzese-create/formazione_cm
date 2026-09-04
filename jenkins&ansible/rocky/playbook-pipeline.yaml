@@ -3,12 +3,12 @@
   become: true
   gather_facts: false
   vars:
-    image: 192.168.56.14:5000/step2docker:latest
+    image: 192.168.56.14:5000/docker-ssh:latest
   
   tasks:
     - name: Avvia il container
       community.docker.docker_container:
-        name: step2docker
+        name: docker-ssh
         image: "{{ image }}"
         state: started
         recreate: true
