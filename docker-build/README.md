@@ -5,30 +5,40 @@ Automazione, tramite Ansible, della **build di due immagini Docker basate su dis
 ## Architettura e flusso di esecuzione
 
 ```
-Control node (dove lanci ansible-playbook)
+Control node
         │
         │  SSH
         ▼
-   host "server3"  ──────────────────────────────────────────┐
-        │                                                    │
-        │ Docker daemon                                      │
-        ├──► immagine ubuntu-ssh:latest ──► container        │
-        │      ubuntu-ssh-server   0.0.0.0:2222 ──► :22      │
-        │                                                    │
-        └──► immagine rocky-ssh:latest  ──► container        │
-               rocky-ssh-server    0.0.0.0:2223 ──► :22      │
-                                                             │
-   test: ssh -p 2222 andrea@127.0.0.1 'sudo whoami'  ────────┘
-         ssh -p 2223 andrea@127.0.0.1 'sudo whoami'
+   host "deb"  ───────────────────────────────────────────────────────┐
+        │                                                             │
+        │  1. genera la keypair ed25519 di andrea (se non esiste già) │
+        │  2. crea la build context e ci copia i Dockerfile           │
+        │                                                             │
+        │ Docker daemon                                               │
+        ├──► immagine ubuntu-ssh:latest ──► container                 │
+        │      ubuntu-ssh-server   0.0.0.0:2222 ──► :22               │
+        │      /home/andrea/.ssh/authorized_keys ◄─ mount ro ─┐       │
+        │                                                     │       │
+        └──► immagine rocky-ssh:latest  ──► container         │       │
+               rocky-ssh-server    0.0.0.0:2223 ──► :22       │       │
+               /home/andrea/.ssh/authorized_keys ◄─ mount ro ─┤       │
+                                                              │       │
+                                          id_key_andrea.pub ──┘       │
+                                          (generata al passo 1)       │
+                                                                      │
+   test: ssh -i id_key_andrea -p 2222 andrea@127.0.0.1 'sudo whoami'──┘
+         ssh -i id_key_andrea -p 2223 andrea@127.0.0.1 'sudo whoami'
 ```
 
 Il flusso completo è:
 
-1. Ansible si collega a `server3` e diventa root (`become: true`), perché parlare col socket Docker richiede privilegi.
-2. Per ogni voce della lista `immagini`, costruisce l'immagine dal Dockerfile corrispondente.
-3. Per ogni voce, avvia un container pubblicando la porta 22 interna su una porta diversa dell'host (2222 / 2223) — necessario perché due container non possono occupare la stessa porta host.
-4. Esegue due test funzionali: si collega in SSH con la chiave e lancia `sudo whoami`. Se entrambi rispondono `root`, i tre requisiti dell'esercizio sono verificati end-to-end.
-5. Stampa i risultati.
+1. Ansible si collega a `deb` e diventa root (`become: true`), perché parlare col socket Docker richiede privilegi.
+2. Genera una coppia di chiavi SSH (`ed25519`) per `andrea` direttamente sull'host, se non esiste già.
+3. Crea la directory di build context sull'host e ci copia dentro i Dockerfile presenti sul control node.
+4. Per ogni voce della lista `immagini`, costruisce l'immagine dal Dockerfile corrispondente.
+5. Per ogni voce, avvia un container pubblicando la porta 22 interna su una porta diversa dell'host (2222 / 2223) e montando la chiave pubblica appena generata come `authorized_keys`, in sola lettura.
+6. Esegue due test funzionali: si collega in SSH con la chiave privata generata al passo 2 e lancia `sudo whoami`. Se entrambi rispondono `root`, i requisiti dell'esercizio sono verificati end-to-end.
+7. Stampa i risultati.
 
 ---
 
@@ -98,29 +108,12 @@ RUN useradd --create-home --shell /bin/bash --groups sudo andrea && \
 #### Layer 5 
 
 ```dockerfile
-COPY id_key_andrea.pub /home/andrea/.ssh/authorized_keys
-```
-
-Prende il file `id_key_andrea.pub` dal build context (la cartella `/root/immagini` sull'host) e lo mette dentro l'immagine, rinominandolo `authorized_keys` — che è esattamente il file dove `sshd` cerca le chiavi autorizzate per quell'utente.
-
-#### Layer 6 
-
-```dockerfile
-RUN chmod 600 /home/andrea/.ssh/authorized_keys && \
-    chown andrea:andrea /home/andrea/.ssh/authorized_keys
-```
-
-`COPY` inserisce il file come `root:root`. Se lo lasciassi così, `andrea` non ne sarebbe il proprietario e `sshd` — di nuovo per StrictModes — rifiuterebbe la chiave. Questi due comandi assegnano la proprietà all'utente giusto e restringono i permessi a "solo il proprietario può leggere e scrivere".
-
-#### Layer 7 
-
-```dockerfile
 EXPOSE 22
 ```
 
 È pura documentazione: dice a chi legge il Dockerfile che questa immagine offre un servizio sulla porta 22. Non apre nessuna porta verso l'esterno.
 
-#### Layer 8 
+#### Layer 6
 
 ```dockerfile
 CMD ["/usr/sbin/sshd", "-D", "-e"]
@@ -136,7 +129,7 @@ Definisce il comando che viene lanciato quando il container parte. Non crea un l
 
 ## Dockerfile Rocky 
 
-La logica è la stessa del file Ubuntu: installa, configura, crea l'utente, copia la chiave, avvia `sshd`. Cambia il "dialetto" della distribuzione. 
+La logica è la stessa del file Ubuntu: installa, configura, crea l'utente, avvia `sshd`. Cambia il "dialetto" della distribuzione. Anche qui i vecchi layer di `COPY`/`chmod`/`chown` della chiave sono stati rimossi, per lo stesso motivo spiegato sopra: la chiave arriva a runtime, montata dal playbook.
 
 ### Layer differenti da ubuntu:
 
@@ -196,12 +189,12 @@ RUN useradd --create-home --shell /bin/bash --groups wheel andrea && \
 
 ```yaml
 - name: Build immagini docker con OS diversi
-  hosts: server3
+  hosts: deb
   become: true
   gather_facts: false
 ```
 
-- `hosts: server3` — host in cui viene eseguito il playbook
+- `hosts: deb` — host in cui viene eseguito il playbook
 - `become: true` — escalation a root
 - `gather_facts: false` — salta la raccolta dei fatti. Qui nessun task usa variabili `ansible_*`
 
@@ -209,6 +202,8 @@ RUN useradd --create-home --shell /bin/bash --groups wheel andrea && \
 
 ```yaml
   vars:
+    build_context: /root/immagini
+    ssh_key_path: /home/andrea/.ssh/id_key_andrea
     immagini:
       - name: ubuntu-ssh
         container_name: ubuntu-ssh-server
@@ -220,27 +215,73 @@ RUN useradd --create-home --shell /bin/bash --groups wheel andrea && \
         port: 2223
 ```
 
-Invece di duplicare i task per ogni OS, tutta la variabilità è concentrata in una **lista di dizionari**, e i task la iterano con `loop`.
+- `build_context` — la cartella sull'host `deb` dove finiscono i Dockerfile e da cui Docker costruisce le immagini. Prima era scritta a mano dentro ogni task che ne aveva bisogno; ora è una variabile unica.
+- `ssh_key_path` — il percorso (senza estensione) della coppia di chiavi SSH di `andrea` sull'host `deb`. Da questa variabile derivano sia il file privato (`ssh_key_path`) sia il pubblico (`ssh_key_path.pub`), usati rispettivamente per i test SSH e per il mount in `authorized_keys`.
+- `immagini` — invece di duplicare i task per ogni OS, tutta la variabilità specifica di ogni immagine è concentrata in una **lista di dizionari**, e i task la iterano con `loop`.
 
-### Task 1 — Build delle immagini
+# Task del playbook Ansible
+
+### Task 1 — Genera coppia di chiavi SSH per andrea
 
 ```yaml
-    - name: Build immagini docker
+    - name: Genera coppia di chiavi SSH per andrea
+      community.crypto.openssh_keypair:
+        path: "{{ ssh_key_path }}"
+        type: ed25519
+```
+
+Genera sull'host una coppia di chiavi SSH per l'utente `andrea`, nel percorso indicato da `ssh_key_path`.
+
+- `type: ed25519` sceglie l'algoritmo (più moderno e compatto di RSA).
+- Il modulo è idempotente: se la coppia di chiavi esiste già in `ssh_key_path`, il task non fa nulla e riporta `ok` invece di `changed`. Rieseguire il playbook non genera una nuova chiave a ogni run, e i container restano accessibili con la stessa chiave tra un'esecuzione e l'altra.
+
+### Task 2 — Crea la directory di build
+
+```yaml
+    - name: Crea la directory di build
+      ansible.builtin.file:
+        path: "{{ build_context }}"
+        state: directory
+        mode: "0755"
+```
+
+Crea, sull'host, la directory indicata da `build_context`, che farà da build context per Docker. `state: directory` dice al modulo `ansible.builtin.file` di assicurarsi che quel percorso esista come cartella (creandola se manca), con permessi `0755`.
+
+### Task 3 — Copia i Dockerfile dal Mac
+
+```yaml
+    - name: Copia i Dockerfile dal Mac
+      ansible.builtin.copy:
+        src: "{{ item.Dockerfile }}"
+        dest: "{{ build_context }}/{{ item.Dockerfile }}"
+        mode: "0644"
+      loop: "{{ immagini }}"
+```
+
+Per ogni voce della lista `immagini`, copia il Dockerfile corrispondente dal control node dentro la build context sull'host, con permessi `0644`. Il `loop: "{{ immagini }}"` fa eseguire il task una volta per ogni immagine da costruire (Ubuntu e Rocky), usando `item.Dockerfile` per sapere quale file copiare.
+
+### Task 4 — Build delle immagini
+
+```yaml
+    - name: Build immagine docker
       community.docker.docker_image:
         name: "{{ item.name }}"
         tag: latest
         source: build
         build:
-          path: /root/immagini
+          path: "{{ build_context }}"
           dockerfile: "{{ item.Dockerfile }}"
       loop: "{{ immagini }}"
 ```
 
-- `source: build` dice al modulo di **costruire** l'immagine
-- `build.path` è il **build context**: la directory che viene inviata al Docker daemon. Tutto ciò che `COPY` referenzia deve stare lì dentro.
-- `build.dockerfile` sceglie quale Dockerfile usare all'interno del context
+Per ogni voce di `immagini`, costruisce l'immagine Docker corrispondente.
 
-### Task 2 — Avvio dei container
+- `source: build` dice al modulo di **costruire** l'immagine (invece di scaricarla da un registry).
+- `build.path` è il **build context**: la directory che viene inviata al Docker daemon, presa dalla variabile `build_context`.
+- `build.dockerfile` sceglie quale Dockerfile usare all'interno del context.
+- `tag: latest` assegna il tag `latest` all'immagine appena costruita.
+
+### Task 5 — Avvio dei container
 
 ```yaml
     - name: Build container
@@ -251,37 +292,42 @@ Invece di duplicare i task per ogni OS, tutta la variabilità è concentrata in 
         restart_policy: unless-stopped
         published_ports:
           - "{{ item.port }}:22"
+        volumes:
+          - "{{ ssh_key_path }}.pub:/home/andrea/.ssh/authorized_keys:ro"
       loop: "{{ immagini }}"
 ```
 
-- `state: started` crea il container se non esiste e lo avvia; se esiste già ma con una configurazione diversa, il modulo lo ricrea.
-- `restart_policy: unless-stopped`: Docker riavvia il container se il processo va in crash e al riavvio del daemon o dell'host, ma rispetta uno stop manuale esplicito.
-- `published_ports: "2222:22"` mappa la porta 22 **del container** sulla 2222 **dell'host**.
+Per ogni voce di `immagini`, crea e avvia il container corrispondente.
 
-### Task 3 e 4 — Test funzionali
+- `state: started` crea il container se non esiste e lo avvia; se esiste già ma con una configurazione diversa, il modulo lo ricrea.
+- `restart_policy: unless-stopped`: Docker riavvia il container se il processo va in crash o al riavvio del daemon/host, ma rispetta uno stop manuale esplicito.
+- `published_ports: "{{ item.port }}:22"` mappa la porta 22 **del container** sulla porta dell'host indicata da `item.port` (2222 per Ubuntu, 2223 per Rocky).
+- `volumes: "{{ ssh_key_path }}.pub:/home/andrea/.ssh/authorized_keys:ro"` monta il file `{{ ssh_key_path }}.pub` — la chiave pubblica generata al Task 1 — dentro il container, al posto di `/home/andrea/.ssh/authorized_keys`, in sola lettura (`:ro`). È così che l'utente `andrea` nel container risulta autorizzato a collegarsi con quella chiave.
+
+### Task 6 e 7 — Test funzionali
 
 ```yaml
     - name: Test connessione ssh e sudo Ubuntu
       ansible.builtin.command:
-        cmd: "ssh -i /home/andrea/.ssh/id_key_andrea -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null andrea@127.0.0.1 'sudo whoami'"
+        cmd: "ssh -i {{ ssh_key_path }} -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null andrea@127.0.0.1 'sudo whoami'"
       register: test_ssh_ubuntu
       changed_when: false
 ```
 
-Questo task verifica **tutti e tre i requisiti in un colpo solo**: se `sudo whoami` risponde `root`, allora il container è in ascolto, `sshd` è attivo, la chiave è stata accettata e l'utente ha privilegi sudo senza password.
+Verifica che il container Ubuntu funzioni correttamente end-to-end: si collega in SSH come `andrea` ed esegue `sudo whoami`. Se risponde `root`, vuol dire che il container è in ascolto, `sshd` è attivo, la chiave montata al Task 5 è stata accettata e l'utente ha privilegi sudo senza password.
 
 Le opzioni:
 
-- `-i` indica la chiave privata da usare.
+- `-i {{ ssh_key_path }}` indica la chiave privata da usare, quella generata al Task 1.
 - `-p 2222` la porta host mappata.
-- `-o StrictHostKeyChecking=no` accetta la host key senza chiedere conferma. 
+- `-o StrictHostKeyChecking=no` accetta la host key senza chiedere conferma.
 - `-o UserKnownHostsFile=/dev/null` evita di scrivere la host key in `~/.ssh/known_hosts`. Serve perché a ogni ricostruzione dell'immagine la host key cambia, e una voce vecchia genererebbe il temuto `REMOTE HOST IDENTIFICATION HAS CHANGED`, bloccando le esecuzioni successive.
 - `register:` salva il risultato (stdout, stderr, rc) in una variabile.
 - `changed_when: false` dichiara che il task non modifica nulla. Senza, `command` riporterebbe sempre `changed`, sporcando il report di idempotenza — un playbook rieseguito su un sistema già configurato dovrebbe risultare tutto `ok`.
 
-Il task **fallisce** se `ssh` esce con codice diverso da zero, il che è il comportamento voluto: se il test non passa, il playbook si ferma.
+Il task **fallisce** se `ssh` esce con codice diverso da zero, il che è il comportamento voluto: se il test non passa, il playbook si ferma. Il test su Rocky (`test_ssh_rocky`, porta 2223) fa la stessa cosa, cambia solo la porta.
 
-### Task 5 — Report
+### Task 8 — Report
 
 ```yaml
     - name: Stampa risultati
@@ -291,10 +337,10 @@ Il task **fallisce** se `ssh` esce con codice diverso da zero, il che è il comp
           - "Rocky: {{ test_ssh_rocky.stdout }}"
 ```
 
-Stampa l'output dei due test. L'output atteso è:
+Stampa l'output dei due test tramite `ansible.builtin.debug`. L'output atteso è:
 
 ```
-ok: [server3] => {
+ok: [deb] => {
     "msg": [
         "Ubuntu: root",
         "Rocky: root"
