@@ -11,8 +11,9 @@ Control node
         ▼
    host "deb"  ───────────────────────────────────────────────────────┐
         │                                                             │
-        │  1. genera la keypair ed25519 di andrea (se non esiste già) │
-        │  2. crea la build context e ci copia i Dockerfile           │
+        │  1. crea l'utente andrea con UID 1500                       │
+        │  2. genera la keypair ed25519 di andrea (di sua proprietà)  │
+        │  3. crea la build context e ci copia i Dockerfile           │
         │                                                             │
         │ Docker daemon                                               │
         ├──► immagine ubuntu-ssh:latest ──► container                 │
@@ -24,7 +25,7 @@ Control node
                /home/andrea/.ssh/authorized_keys ◄─ mount ro ─┤       │
                                                               │       │
                                           id_key_andrea.pub ──┘       │
-                                          (generata al passo 1)       │
+                                          (generata al passo 2)       │
                                                                       │
    test: ssh -i id_key_andrea -p 2222 andrea@127.0.0.1 'sudo whoami'──┘
          ssh -i id_key_andrea -p 2223 andrea@127.0.0.1 'sudo whoami'
@@ -33,12 +34,24 @@ Control node
 Il flusso completo è:
 
 1. Ansible si collega a `deb` e diventa root (`become: true`), perché parlare col socket Docker richiede privilegi.
-2. Genera una coppia di chiavi SSH (`ed25519`) per `andrea` direttamente sull'host, se non esiste già.
-3. Crea la directory di build context sull'host e ci copia dentro i Dockerfile presenti sul control node.
-4. Per ogni voce della lista `immagini`, costruisce l'immagine dal Dockerfile corrispondente.
-5. Per ogni voce, avvia un container pubblicando la porta 22 interna su una porta diversa dell'host (2222 / 2223) e montando la chiave pubblica appena generata come `authorized_keys`, in sola lettura.
-6. Esegue due test funzionali: si collega in SSH con la chiave privata generata al passo 2 e lancia `sudo whoami`. Se entrambi rispondono `root`, i requisiti dell'esercizio sono verificati end-to-end.
-7. Stampa i risultati.
+2. Crea sull'host l'utente `andrea` con **UID 1500** e la sua home, così che i passi successivi abbiano un utente a cui intestare la chiave.
+3. Genera una coppia di chiavi SSH (`ed25519`) per `andrea` direttamente sull'host, se non esiste già, intestandola all'utente appena creato (`owner`/`group`).
+4. Crea la directory di build context sull'host e ci copia dentro i Dockerfile presenti sul control node.
+5. Per ogni voce della lista `immagini`, costruisce l'immagine dal Dockerfile corrispondente. Dentro i Dockerfile l'utente `andrea` viene creato con lo **stesso UID 1500** dell'utente sull'host.
+6. Per ogni voce, avvia un container pubblicando la porta 22 interna su una porta diversa dell'host (2222 / 2223) e montando la chiave pubblica appena generata come `authorized_keys`, in sola lettura.
+7. Esegue due test funzionali: si collega in SSH con la chiave privata generata al passo 3 e lancia `sudo whoami`. Se entrambi rispondono `root`, i requisiti dell'esercizio sono verificati end-to-end.
+8. Stampa i risultati.
+
+### Perché l'UID deve coincidere
+
+La chiave pubblica non viene copiata dentro l'immagine: viene **montata a runtime** dall'host come `/home/andrea/.ssh/authorized_keys`. Un bind mount non traduce gli utenti: il kernel espone la proprietà del file in forma **numerica**, quindi il file arriva nel container come "di proprietà dell'UID 1500" (l'`andrea` dell'host).
+
+Dall'altra parte `sshd` applica *StrictModes*: `authorized_keys` deve appartenere all'utente che si collega (o a root) e non essere scrivibile da gruppo o altri, altrimenti il file viene **ignorato** e il login fallisce con `Permission denied (publickey)`.
+
+Se dentro il container `andrea` avesse l'UID di default assegnato da `useradd` (1000), le due viste non combacerebbero: il file risulterebbe di un utente estraneo e la chiave verrebbe scartata. Per questo:
+
+- il playbook crea `andrea` sull'host con `uid: 1500` e intesta a lui la keypair;
+- entrambi i Dockerfile creano `andrea` con `useradd --uid 1500`.
 
 ---
 
@@ -52,7 +65,7 @@ FROM ubuntu:24.04
 
 Dice a Docker di partire da un'immagine Ubuntu 24.04 già pronta, scaricata da Docker Hub. Dentro c'è un filesystem Ubuntu minimale: niente kernel (quello lo mette l'host), niente servizi in esecuzione, solo i file di base.
 
-#### Layer 2 
+#### Layer 2
 
 ```dockerfile
 RUN apt-get update && \
@@ -88,15 +101,16 @@ RUN mkdir -p /var/run/sshd && \
 #### Layer 4
 
 ```dockerfile
-RUN useradd --create-home --shell /bin/bash --groups sudo andrea && \
+RUN useradd --uid 1500 --create-home --shell /bin/bash --groups sudo andrea && \
     echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \
     chown andrea:andrea /home/andrea/.ssh
 ```
 
-**`useradd`** crea l'utente, con tre opzioni che contano:
+**`useradd`** crea l'utente, con quattro opzioni che contano:
 
+- `--uid 1500` fissa l'UID numerico, allineandolo a quello dell'utente `andrea` sull'host. È quello che fa combaciare la proprietà del file `authorized_keys` montato a runtime (vedi *Perché l'UID deve coincidere*). Senza, `useradd` assegnerebbe il primo UID libero (tipicamente 1000) e il login a chiave fallirebbe.
 - `--create-home` crea `/home/andrea`. Senza, l'utente esisterebbe ma non avrebbe una home e senza home non c'è posto dove mettere `.ssh/authorized_keys`.
 - `--shell /bin/bash` gli assegna una shell interattiva vera.
 - `--groups sudo` lo mette nel gruppo `sudo`, che su Ubuntu è il gruppo degli amministratori.
@@ -119,8 +133,6 @@ EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
 ```
 
-Definisce il comando che viene lanciato quando il container parte. Non crea un layer di filesystem: è solo un'informazione salvata nei metadati dell'immagine.
-
 **`-D`** (*don't detach*): normalmente `sshd` si "demonizza": si sdoppia, il processo padre termina e il figlio resta in background. Con `-D`, `sshd` resta in primo piano.
 
 **`-e`** (*log to stderr*): normalmente `sshd` scrive i log su syslog. In un container syslog non gira, quindi i log finirebbero nel vuoto e non si avrebbe modo di capire perché un login fallisce. Con `-e` i log vanno su standard error, che è lo stream che si legge con `docker logs`.
@@ -129,7 +141,7 @@ Definisce il comando che viene lanciato quando il container parte. Non crea un l
 
 ## Dockerfile Rocky 
 
-La logica è la stessa del file Ubuntu: installa, configura, crea l'utente, avvia `sshd`. Cambia il "dialetto" della distribuzione. Anche qui i vecchi layer di `COPY`/`chmod`/`chown` della chiave sono stati rimossi, per lo stesso motivo spiegato sopra: la chiave arriva a runtime, montata dal playbook.
+La logica è la stessa del file Ubuntu: installa, configura, crea l'utente, avvia `sshd`. Cambia il "dialetto" della distribuzione.
 
 ### Layer differenti da ubuntu:
 
@@ -169,7 +181,7 @@ RUN sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc
 #### Layer 5 
 
 ```dockerfile
-RUN useradd --create-home --shell /bin/bash --groups wheel andrea && \
+RUN useradd --uid 1500 --create-home --shell /bin/bash --groups wheel andrea && \
     echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \
@@ -180,6 +192,8 @@ RUN useradd --create-home --shell /bin/bash --groups wheel andrea && \
 
 - famiglia **Debian/Ubuntu** → gruppo `sudo`
 - famiglia **RHEL/Rocky/Fedora/CentOS** → gruppo `wheel`
+
+`--uid 1500` invece è identico nei due Dockerfile: l'allineamento con l'UID dell'utente sull'host non dipende dalla distribuzione.
 
 ---
 
@@ -213,29 +227,56 @@ RUN useradd --create-home --shell /bin/bash --groups wheel andrea && \
         container_name: rocky-ssh-server
         Dockerfile: Dockerfile-rocky
         port: 2223
+    user:
+      name: andrea
+      shell: /bin/bash
+      uid: 1500
 ```
 
 - `build_context` — la cartella sull'host `deb` dove finiscono i Dockerfile e da cui Docker costruisce le immagini. Prima era scritta a mano dentro ogni task che ne aveva bisogno; ora è una variabile unica.
 - `ssh_key_path` — il percorso (senza estensione) della coppia di chiavi SSH di `andrea` sull'host `deb`. Da questa variabile derivano sia il file privato (`ssh_key_path`) sia il pubblico (`ssh_key_path.pub`), usati rispettivamente per i test SSH e per il mount in `authorized_keys`.
 - `immagini` — invece di duplicare i task per ogni OS, tutta la variabilità specifica di ogni immagine è concentrata in una **lista di dizionari**, e i task la iterano con `loop`.
+- `user` — i dati dell'utente creato sull'host: `name`, `shell` e soprattutto `uid`. L'UID è qui perché deve corrispondere a quello usato nei Dockerfile (`useradd --uid 1500`), altrimenti l'`authorized_keys` montato non risulta di proprietà di `andrea` dentro il container.
 
 # Task del playbook Ansible
 
-### Task 1 — Genera coppia di chiavi SSH per andrea
+### Task 1 — Crea l'utente andrea
+
+```yaml
+    - name: Crea l'utente andrea
+      ansible.builtin.user:
+        name: "{{ user.name }}"
+        shell: "{{ user.shell }}"
+        uid: "{{ user.uid}}"
+        create_home: true
+```
+
+Crea sull'host `deb` l'utente `andrea`, che è il proprietario della coppia di chiavi e il riferimento numerico per i container.
+
+- `uid: "{{ user.uid }}"` — fissa l'UID a **1500** invece di lasciarlo scegliere al sistema. È il perno di tutto il meccanismo: lo stesso numero è usato dal `useradd --uid 1500` dentro i Dockerfile, e solo così il file montato come `authorized_keys` risulta di proprietà di `andrea` anche dentro il container.
+- `create_home: true` — crea `/home/andrea`, cioè la directory sotto cui il task successivo scrive la coppia di chiavi (`ssh_key_path` punta a `/home/andrea/.ssh/id_key_andrea`).
+- `shell: /bin/bash` — shell interattiva, coerente con quella dell'utente dentro i container.
+
+È il **primo** task della lista perché i due task successivi dipendono da lui: la chiave viene scritta dentro la sua home e gli viene intestata, quindi l'utente deve già esistere. Il modulo è idempotente: a run successive l'utente c'è già e il task riporta `ok`.
+
+### Task 2 — Genera coppia di chiavi SSH per andrea
 
 ```yaml
     - name: Genera coppia di chiavi SSH per andrea
       community.crypto.openssh_keypair:
         path: "{{ ssh_key_path }}"
         type: ed25519
+        owner: "{{ user.name }}"
+        group: "{{ user.name }}"
 ```
 
 Genera sull'host una coppia di chiavi SSH per l'utente `andrea`, nel percorso indicato da `ssh_key_path`.
 
 - `type: ed25519` sceglie l'algoritmo (più moderno e compatto di RSA).
+- `owner` / `group` intestano i file della chiave ad `andrea`. Il playbook gira come root (`become: true`), quindi senza queste due righe chiave privata e pubblica resterebbero di root: la chiave verrebbe generata "per andrea" ma non gli apparterrebbe, e il `.pub` montato nel container arriverebbe con UID 0 invece che 1500. Così invece la proprietà è coerente su tutto il percorso host → mount → `sshd`.
 - Il modulo è idempotente: se la coppia di chiavi esiste già in `ssh_key_path`, il task non fa nulla e riporta `ok` invece di `changed`. Rieseguire il playbook non genera una nuova chiave a ogni run, e i container restano accessibili con la stessa chiave tra un'esecuzione e l'altra.
 
-### Task 2 — Crea la directory di build
+### Task 3 — Crea la directory di build
 
 ```yaml
     - name: Crea la directory di build
@@ -247,7 +288,7 @@ Genera sull'host una coppia di chiavi SSH per l'utente `andrea`, nel percorso in
 
 Crea, sull'host, la directory indicata da `build_context`, che farà da build context per Docker. `state: directory` dice al modulo `ansible.builtin.file` di assicurarsi che quel percorso esista come cartella (creandola se manca), con permessi `0755`.
 
-### Task 3 — Copia i Dockerfile dal Mac
+### Task 4 — Copia i Dockerfile dal Mac
 
 ```yaml
     - name: Copia i Dockerfile dal Mac
@@ -260,7 +301,7 @@ Crea, sull'host, la directory indicata da `build_context`, che farà da build co
 
 Per ogni voce della lista `immagini`, copia il Dockerfile corrispondente dal control node dentro la build context sull'host, con permessi `0644`. Il `loop: "{{ immagini }}"` fa eseguire il task una volta per ogni immagine da costruire (Ubuntu e Rocky), usando `item.Dockerfile` per sapere quale file copiare.
 
-### Task 4 — Build delle immagini
+### Task 5 — Build delle immagini
 
 ```yaml
     - name: Build immagine docker
@@ -281,7 +322,7 @@ Per ogni voce di `immagini`, costruisce l'immagine Docker corrispondente.
 - `build.dockerfile` sceglie quale Dockerfile usare all'interno del context.
 - `tag: latest` assegna il tag `latest` all'immagine appena costruita.
 
-### Task 5 — Avvio dei container
+### Task 6 — Avvio dei container
 
 ```yaml
     - name: Build container
@@ -302,9 +343,9 @@ Per ogni voce di `immagini`, crea e avvia il container corrispondente.
 - `state: started` crea il container se non esiste e lo avvia; se esiste già ma con una configurazione diversa, il modulo lo ricrea.
 - `restart_policy: unless-stopped`: Docker riavvia il container se il processo va in crash o al riavvio del daemon/host, ma rispetta uno stop manuale esplicito.
 - `published_ports: "{{ item.port }}:22"` mappa la porta 22 **del container** sulla porta dell'host indicata da `item.port` (2222 per Ubuntu, 2223 per Rocky).
-- `volumes: "{{ ssh_key_path }}.pub:/home/andrea/.ssh/authorized_keys:ro"` monta il file `{{ ssh_key_path }}.pub` — la chiave pubblica generata al Task 1 — dentro il container, al posto di `/home/andrea/.ssh/authorized_keys`, in sola lettura (`:ro`). È così che l'utente `andrea` nel container risulta autorizzato a collegarsi con quella chiave.
+- `volumes: "{{ ssh_key_path }}.pub:/home/andrea/.ssh/authorized_keys:ro"` monta il file `{{ ssh_key_path }}.pub` — la chiave pubblica generata al Task 2 — dentro il container, al posto di `/home/andrea/.ssh/authorized_keys`, in sola lettura (`:ro`). È così che l'utente `andrea` nel container risulta autorizzato a collegarsi con quella chiave.
 
-### Task 6 e 7 — Test funzionali
+### Task 7 e 8 — Test funzionali
 
 ```yaml
     - name: Test connessione ssh e sudo Ubuntu
@@ -314,11 +355,11 @@ Per ogni voce di `immagini`, crea e avvia il container corrispondente.
       changed_when: false
 ```
 
-Verifica che il container Ubuntu funzioni correttamente end-to-end: si collega in SSH come `andrea` ed esegue `sudo whoami`. Se risponde `root`, vuol dire che il container è in ascolto, `sshd` è attivo, la chiave montata al Task 5 è stata accettata e l'utente ha privilegi sudo senza password.
+Verifica che il container Ubuntu funzioni correttamente end-to-end: si collega in SSH come `andrea` ed esegue `sudo whoami`. Se risponde `root`, vuol dire che il container è in ascolto, `sshd` è attivo, la chiave montata al Task 6 è stata accettata e l'utente ha privilegi sudo senza password.
 
 Le opzioni:
 
-- `-i {{ ssh_key_path }}` indica la chiave privata da usare, quella generata al Task 1.
+- `-i {{ ssh_key_path }}` indica la chiave privata da usare, quella generata al Task 2.
 - `-p 2222` la porta host mappata.
 - `-o StrictHostKeyChecking=no` accetta la host key senza chiedere conferma.
 - `-o UserKnownHostsFile=/dev/null` evita di scrivere la host key in `~/.ssh/known_hosts`. Serve perché a ogni ricostruzione dell'immagine la host key cambia, e una voce vecchia genererebbe il temuto `REMOTE HOST IDENTIFICATION HAS CHANGED`, bloccando le esecuzioni successive.
@@ -327,7 +368,7 @@ Le opzioni:
 
 Il task **fallisce** se `ssh` esce con codice diverso da zero, il che è il comportamento voluto: se il test non passa, il playbook si ferma. Il test su Rocky (`test_ssh_rocky`, porta 2223) fa la stessa cosa, cambia solo la porta.
 
-### Task 8 — Report
+### Task 9 — Report
 
 ```yaml
     - name: Stampa risultati

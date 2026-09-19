@@ -10,7 +10,7 @@ RUN mkdir -p /var/run/sshd && \
     sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
     echo 'AllowUsers andrea' >> /etc/ssh/sshd_config
 
-RUN useradd --create-home --shell /bin/bash --groups sudo andrea && \
+RUN useradd --uid 1500 --create-home --shell /bin/bash --groups sudo andrea && \
     echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \

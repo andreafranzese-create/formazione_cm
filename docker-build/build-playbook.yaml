@@ -15,12 +15,24 @@
         container_name: rocky-ssh-server
         Dockerfile: Dockerfile-rocky
         port: 2223
+    user:
+      name: andrea
+      shell: /bin/bash
 
   tasks:
+    - name: Crea l'utente andrea
+      ansible.builtin.user:
+        name: "{{ user.name }}"
+        shell: "{{ user.shell }}"
+        uid: 1500
+        create_home: true
+
     - name: Genera coppia di chiavi SSH per andrea
       community.crypto.openssh_keypair:
         path: "{{ ssh_key_path }}"
         type: ed25519
+        owner: "{{ user.name }}"
+        group: "{{ user.name }}"
 
     - name: Crea la directory di build
       ansible.builtin.file:
