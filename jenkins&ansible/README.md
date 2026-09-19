@@ -2,7 +2,7 @@
 
 Questo repository contiene tutto il materiale di **Configuration Management + CI/CD** in cui:
 
-1. un container (`docker-ssh`) viene preparato con Ansible su una VM Debian;
+1. un container "bersaglio" (`docker-ssh`) viene preparato con Ansible su una VM Debian;
 2. una pipeline Jenkins builda un'immagine, la tagga con un **numero di build progressivo** e la pusha su un **registry locale insicuro**;
 3. la stessa pipeline, cambiando agent a metà esecuzione, usa **Ansible** per fare il deploy di quell'immagine **dentro** il container bersaglio (Docker-in-Docker).
 
@@ -31,43 +31,57 @@ Ci sono **tre macchine**, ognuna con un ruolo netto e non sovrapposto.
 
 ## Architettura
 
+**Chi prepara cosa** — i tre playbook lanciati dal Mac:
+
 ```mermaid
-flowchart TB
+flowchart LR
     classDef manual fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef agent fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    classDef target fill:#dcfce7,stroke:#16a34a,color:#14532d
+
+    MAC["Mac<br/>control node Ansible"]:::manual
+    T1["VM Debian<br/>container 'docker-ssh'"]:::target
+    T2["VM Rocky<br/>agent 'podman' — 10.0.0.3"]:::agent
+    T3["VM Rocky<br/>agent 'ansible' — 10.0.0.4"]:::agent
+
+    MAC -- "docker-ssh.yaml" --> T1
+    MAC -- "podman-agent.yaml" --> T2
+    MAC -- "ansible-agent.yaml" --> T3
+```
+
+**Cosa succede a ogni build** — da qui in poi il Mac non c'entra più:
+
+```mermaid
+flowchart LR
     classDef pipeline fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef agent fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
     classDef target fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef registry fill:#fae8ff,stroke:#a21caf,color:#4a044e
 
-    MAC["Mac — control node Ansible<br/>docker-ssh.yaml · ansible-agent.yaml · vault.yaml"]:::manual
-
     subgraph ROCKY["VM Rocky — Podman, rete network_1"]
-        PIPE["Jenkins controller<br/>10.0.0.2:8080 — Jenkinsfile"]:::pipeline
-        AGP["Agent label 'podman'<br/>build + push"]:::agent
-        AGA["Agent label 'ansible' — 10.0.0.4<br/>/srv/ansible → /ansible"]:::agent
+        direction TB
+        PIPE["Jenkins controller<br/>10.0.0.2:8080"]:::pipeline
+        AGP["Agent 'podman'<br/>10.0.0.3"]:::agent
+        AGA["Agent 'ansible'<br/>10.0.0.4"]:::agent
+        PIPE -- "stage 1<br/>build and push" --> AGP
+        PIPE -- "stage 2<br/>deploy immagine" --> AGA
     end
 
     subgraph DEBIAN["VM Debian — Docker — 192.168.56.14"]
-        REG[("Registry insicuro<br/>192.168.56.14:5000")]:::registry
-        subgraph DS["Container ESTERNO 'docker-ssh' (privileged)"]
-            SSHD["sshd :22 → host :2224"]:::target
+        direction TB
+        REG[("Registry insicuro<br/>:5000")]:::registry
+        subgraph DS["Container esterno 'docker-ssh' — privileged"]
+            direction TB
+            SSHD["sshd :22<br/>pubblicata su :2224"]:::target
             DIND["dockerd interno"]:::target
-            INNER["Container INTERNO 'docker-ssh'"]:::target
-            SSHD --- DIND
-            DIND --- INNER
+            INNER["Container interno<br/>'docker-ssh'"]:::target
+            SSHD --> DIND
+            DIND --> INNER
         end
     end
 
-    MAC -- "mac/docker-ssh.yaml<br/>(build + run del container esterno)" --> DS
-    MAC -- "mac/ansible-agent.yaml<br/>(immagine + chiavi + avvio agent)" --> AGA
-    MAC -- "mac/podman-agent.yaml<br/>(contesto di build + avvio agent)" --> AGP
-
-    PIPE -- "stage 'build and push'" --> AGP
-    AGP -- "podman build + push<br/>docker-ssh:BUILD_NUMBER" --> REG
-
-    PIPE -- "stage 'deploy immagine'" --> AGA
-    AGA -- "SSH :2224 con chiave privata<br/>ansible-playbook playbook-pipeline.yaml" --> SSHD
-
+    AGP == "push docker-ssh:BUILD_NUMBER" ==> REG
+    AGA == "SSH :2224<br/>playbook-pipeline.yaml" ==> SSHD
     INNER -. "pull dell'immagine taggata" .-> REG
 ```
 
@@ -86,6 +100,10 @@ Questa fase è il prerequisito della pipeline e **si lancia interamente dal Mac*
 `mac/podman-agent.yaml`, sempre sulla **VM Rocky**, scrive con un template la configurazione che autorizza Podman a usare il registry insicuro, builda l'immagine dell'agent di build da `Dockerfile-podman-agent`, copia in `/home/jenkins/agent` il contesto che la pipeline userà (di nuovo `Dockerfile` ed `entrypoint.sh` di `docker-ssh`) e avvia l'agent, anch'esso con il segreto letto dal vault.
 
 Resta fuori dall'automazione **una cosa sola**: installare la chiave pubblica dell'agent nel container `docker-ssh`. La coppia viene generata su Rocky in `/srv/ansible/ansible-agent-key.pub`, e quella pubblica va messa in `/home/andrea/.ssh/authorized_keys` dentro il container bersaglio. Senza, l'agent non entra.
+
+L'accettazione della fingerprint SSH, che prima richiedeva una connessione manuale, è risolta dall'inventario con `-o StrictHostKeyChecking=no`: la verifica della chiave host viene disattivata e non compare alcun prompt. Si rinuncia così alla protezione man-in-the-middle verso quel bersaglio — scelta accettabile su una rete di laboratorio, non su un host reale.
+
+Ci sono inoltre alcuni presupposti d'ambiente che i playbook danno per esistenti e non creano: vedi *Ordine di esecuzione* in fondo.
 
 ### Fase B — Esecuzione (automatica, a ogni build di Jenkins)
 
@@ -120,6 +138,8 @@ pipeline {
     }
 }
 ```
+
+Tre cose da notare:
 
 - **`agent { label 'podman' }` in cima** — è l'agent di default: ogni stage che non ne dichiara uno proprio gira lì.
 - **`IMAGE = ...:${env.BUILD_NUMBER}`** — è il **tag progressivo**. `BUILD_NUMBER` è valorizzato automaticamente da Jenkins e cresce di uno a ogni esecuzione (1, 2, 3…), quindi ogni build produce un'immagine distinta e tracciabile invece di sovrascrivere sempre `:latest`.
@@ -175,7 +195,7 @@ jenkins&ansible/
 │   ├── README.md
 │   ├── Dockerfile-ansible-agent → immagine dell'agent "ansible" (deploy)
 │   ├── Dockerfile-podman-agent  → immagine dell'agent "podman" (build)
-│   ├── registries.conf.j2       → template del registry insicuro per Podman
+│   ├── registry.conf.j2         → template del registry insicuro per Podman
 │   ├── inventario               → inventario usato dalla pipeline
 │   └── playbook-pipeline.yaml   → playbook di deploy lanciato dalla pipeline
 │
@@ -197,3 +217,14 @@ jenkins&ansible/
 | Rocky | Podman installato; **controller Jenkins** attivo su `10.0.0.2:8080`; rete Podman **`network_1`** esistente |
 | Jenkins | i due nodi creati nella UI, con le label `podman` e `ansible`; i loro segreti salvati in `mac/vault.yaml` |
 | Mac | Ansible con le collection `community.docker`, `containers.podman`, `community.crypto`; i sorgenti in `/etc/ansible/debian/` e `/etc/ansible/rocky/`; un inventario con i gruppi `rocky` e `debian` |
+
+### Preparazione
+
+1. **Mac** — `ansible-playbook mac/docker-ssh.yaml`: prepara la VM Debian e avvia il container bersaglio.
+2. **Mac** — `ansible-playbook mac/ansible-agent.yaml --ask-vault-pass`: prepara la VM Rocky, genera le chiavi e avvia l'agent di deploy.
+3. **Mac** — `ansible-playbook mac/podman-agent.yaml --ask-vault-pass`: builda l'immagine dell'agent di build, porta il contesto in `/home/jenkins/agent` e avvia l'agent.
+4. **Manuale** — installa `/srv/ansible/ansible-agent-key.pub` (generata al passo 2) nelle `authorized_keys` di `andrea` dentro il container `docker-ssh`.
+5. **Verifica** — dal container agent, `ansible -i /ansible/inventario -m ping server`. Nessuna fingerprint da accettare, grazie a `StrictHostKeyChecking=no` nell'inventario.
+6. **Jenkins** — crea il job dal `Jenkinsfile` e lancia la prima build.
+
+I passi da 1 a 3 sono rilanciabili: le copie e la generazione delle chiavi sono idempotenti. Attenzione però che i playbook non forzano né il rebuild dell'immagine né la ricreazione dei container: se modifichi un `Dockerfile`, l'immagine viene ricostruita solo aggiungendo `rebuild: always` (Docker) o `force: true` (Podman), e il container in esecuzione va rimosso a mano perché la nuova immagine venga usata.
