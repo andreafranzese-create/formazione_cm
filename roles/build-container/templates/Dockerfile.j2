@@ -9,7 +9,7 @@ RUN dnf install -y {{ item.packages | join(' ') }} && \
 RUN apt-get update && \
     apt-get install -y {{ item.packages | join(' ') }} && \
     rm -rf /var/lib/apt/lists/*
-{% endif %}
+{% endif %}
 
 {% if item.distribution == 'RedHat' %}
 RUN ssh-keygen -A
@@ -24,17 +24,12 @@ RUN sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc
     sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
     echo 'AllowUsers {{ user.name }}' >> /etc/ssh/sshd_config
 
-RUN useradd --create-home --shell /bin/bash --groups "{{ 'wheel' if item.distribution == 'RedHat' else 'sudo'}}" "{{ user.name }}" && \
+RUN useradd --uid={{ user.uid }} --create-home --shell /bin/bash --groups "{{ 'wheel' if item.distribution == 'RedHat' else 'sudo'}}" "{{ user.name }}" && \
     echo "{{ user.name }} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/{{ user.name }} && \
     chmod 0440 /etc/sudoers.d/{{ user.name }} && \
     mkdir -p /home/{{ user.name }}/.ssh && \
     chmod 700 /home/{{ user.name }}/.ssh && \
     chown {{ user.name }}:{{ user.name }} /home/{{ user.name }}/.ssh
-
-COPY id_key_{{ user.name }}.pub /home/{{ user.name }}/.ssh/authorized_keys
-
-RUN chmod 600 /home/{{ user.name }}/.ssh/authorized_keys && \
-    chown {{ user.name }}:{{ user.name }} /home/{{ user.name }}/.ssh/authorized_keys
 
 EXPOSE "{{ item.port }}"
 

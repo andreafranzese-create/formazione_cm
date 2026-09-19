@@ -16,4 +16,6 @@
     state: started
     ports:
       - "{{ item.host_port }}:{{ item.port }}"
+    volumes:
+      - "{{ ssh_key_path }}.pub:/home/{{ user.name }}/.ssh/authorized_keys:ro"
   loop: "{{ dockerfile }}"

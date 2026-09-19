@@ -1,13 +1,3 @@
-- name: Aggiungi il registry agli insicuri accettati
-  ansible.builtin.blockinfile:
-    path: /etc/containers/registries.conf
-    block: |
-      [[registry]]
-      location = "{{ registry_host }}:{{ container.host_port }}"
-      insecure = true
-    create: true
-    mode: '0644'
- 
 - name: Avvia il registry
   containers.podman.podman_container:
     name: "{{ container.name }}"
@@ -18,3 +8,13 @@
       - "{{ container.host_port }}:{{ container.container_port }}"
     volumes:
       - "{{ directory.path }}:/var/lib/registry"
+
+- name: Aggiungi il registry agli insicuri accettati
+  ansible.builtin.blockinfile:
+    path: /etc/containers/registries.conf
+    block: |
+      [[registry]]
+      location = "{{ registry_host }}:{{ container.host_port }}"
+      insecure = true
+    create: true
+    mode: '0644'

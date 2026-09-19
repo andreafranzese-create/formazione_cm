@@ -16,12 +16,9 @@
     mode: '0755'
 
 - name: Configura daemon.json
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: daemon.json.j2
     dest: /etc/docker/daemon.json
     mode: '0644'
-    content: |
-      {
-        "insecure-registries": ["{{ registry_host }}:{{ container.host_port }}"]
-      }
   notify: Riavvia Docker
 

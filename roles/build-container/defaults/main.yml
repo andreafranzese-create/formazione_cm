@@ -20,4 +20,6 @@ dockerfile:
 user:
   name: andrea
   shell: /bin/bash
+  uid: 1500
 
+ssh_key_path: /home/{{ user.name }}/.ssh/id_key_{{ user.name }}
