@@ -3,12 +3,28 @@
   become: true
   
   tasks:
+    - name: Copia il contesto di build
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /home/andrea/build/
+      loop:
+        - /etc/ansible/debian/Dockerfile
+        - /etc/ansible/debian/entrypoint.sh
+
     - name: Build immagine docker
       community.docker.docker_image_build:
         name: docker-ssh
         tag: latest
         path: /home/andrea/build
-        dockerfile: Dockerfile 
+        dockerfile: Dockerfile
+
+    - name: Crea la directory per il volume
+      ansible.builtin.file:
+        path: /home/andrea/overlay
+        state: directory
+        owner: root   
+        group: root
+        mode: '0755'
 
     - name: Avvia il container
       community.docker.docker_container:

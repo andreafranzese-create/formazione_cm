@@ -1,0 +1,61 @@
+- name: Configurazione dell'agent podman di jenkins 
+  hosts: rocky
+  become: true
+  vars_files:
+    - vault.yaml
+  vars:
+    registry_insicuro: "192.168.56.14:5000"
+
+  tasks:
+    - name: Configura il registry insicuro per Podman
+      ansible.builtin.template:
+        src: /etc/ansible/rocky/registry.conf.j2
+        dest: /etc/containers/registries.conf.d/insecure-registry.conf
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Copia il contesto di build dell'immagine agent
+      ansible.builtin.copy:
+        src: /etc/ansible/rocky/Dockerfile-podman-agent
+        dest: /home/andrea/build/
+
+    - name: Build immagine
+      containers.podman.podman_image:
+        name: jenkins-agent2
+        state: build
+        path: /home/andrea/build
+        build:
+          file: /home/andrea/build/Dockerfile-podman-agent
+
+    - name: Copia il contesto di build della pipeline
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /home/jenkins/agent/
+        owner: "1000"
+        group: "1000"
+      loop:
+        - /etc/ansible/debian/Dockerfile
+        - /etc/ansible/debian/entrypoint.sh
+
+    - name: Avvia l'agent jenkins
+      containers.podman.podman_container:
+        name: jenkins-agent
+        image: jenkins-agent2
+        pull: never
+        network: network_1
+        ip: "10.0.0.3"
+        security_opt:
+          - "label=disable"
+        group_add:
+          - "1234"
+        volumes:
+          - "/home/jenkins/agent:/home/jenkins/agent"
+          - "/run/podman/podman.sock:/var/run/podman.sock"
+        env:
+          JENKINS_URL: "http://10.0.0.2:8080"
+          JENKINS_AGENT_NAME: agent-1
+          JENKINS_SECRET: "{{ podman_secret }}"
+          JENKINS_AGENT_WORKDIR: /home/jenkins/agent
+          CONTAINER_HOST: "unix:///var/run/podman.sock"
+        state: started

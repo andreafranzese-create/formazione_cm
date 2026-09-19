@@ -1,8 +1,39 @@
-- hosts: rocky
+- name: Configurazione dell'agent ansible di jenkins
+  hosts: rocky
   become: true
   vars_files:
     - vault.yaml
+
   tasks:
+    - name: Copia il contesto di build
+      ansible.builtin.copy:
+        src: /etc/ansible/rocky/Dockerfile-ansible-agent
+        dest: /home/andrea/build/
+
+    - name: Build immagine
+      containers.podman.podman_image:
+        name: ansible
+        state: build
+        path: /home/andrea/build
+        build:
+          file: /home/andrea/build/Dockerfile-ansible-agent
+
+    - name: Copia i file operativi di Ansible
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /srv/ansible/
+      loop:
+        - /etc/ansible/rocky/inventario
+        - /etc/ansible/rocky/playbook-pipeline.yaml
+
+    - name: Genera la coppia di chiavi dell'agent
+      community.crypto.openssh_keypair:
+        path: /srv/ansible/ansible-agent-key
+        type: ed25519
+        owner: "1000"
+        group: "1000"
+        mode: "0600"
+
     - name: Avvia l'agent jenkins
       containers.podman.podman_container:
         name: ansible
@@ -12,10 +43,10 @@
         ip: "10.0.0.4"
         security_opt:
           - "label=disable"
-        env: 
+        env:
           JENKINS_URL: "http://10.0.0.2:8080"
           JENKINS_AGENT_NAME: ansible
-          JENKINS_SECRET: "{{ jenkins_secret }}"
+          JENKINS_SECRET: "{{ ansible_secret }}"
           JENKINS_AGENT_WORKDIR: /home/jenkins/agent
         volumes:
           - /srv/ansible:/ansible
