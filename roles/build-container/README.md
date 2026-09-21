@@ -125,13 +125,13 @@ RUN ssh-keygen -A
 RUN mkdir -p /var/run/sshd
 {% endif %}
 
-RUN sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    echo 'AllowUsers {{ user.name }}' >> /etc/ssh/sshd_config
+RUN echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "AllowUsers {{ user.name }}" >> /etc/ssh/sshd_config.d/10-ssh_config.conf
 
-RUN useradd --uid={{ user.uid }} --create-home --shell /bin/bash --groups "{{ 'wheel' if item.distribution == 'RedHat' else 'sudo' }}" "{{ user.name }}" && \
-    echo "{{ user.name }} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/{{ user.name }} && \
+RUN useradd --uid={{ user.uid }} --create-home --shell /bin/bash --groups "{{ 'wheel' if item.distribution == 'RedHat' else 'sudo'}}" "{{ user.name }}" && \
+    echo "{{ user.name }} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/{{ user.name }} && \
     chmod 0440 /etc/sudoers.d/{{ user.name }} && \
     mkdir -p /home/{{ user.name }}/.ssh && \
     chmod 700 /home/{{ user.name }}/.ssh && \
@@ -155,6 +155,12 @@ Il template usa due meccanismi Jinja diversi:
 
 Il filtro `join(' ')` trasforma la lista `packages` in una stringa separata da spazi: `['sudo', 'openssh-server']` diventa `sudo openssh-server`, cioè la sintassi che vuole il package manager. Aggiungere pacchetti in `defaults` allunga il comando da solo, e resta una sola `RUN` — quindi un solo layer.
 
+### Configurazione di sshd e sudo senza toccare i file principali
+
+Il template **non modifica** né `/etc/ssh/sshd_config` né `/etc/sudoers`: usa file *drop-in* dedicati, creati da zero.
+
+- **sshd**: le direttive di hardening (`PermitRootLogin no`, `PasswordAuthentication no`, `PubkeyAuthentication yes`, `AllowUsers`) vengono scritte in `/etc/ssh/sshd_config.d/10-ssh_config.conf`. Il primo `echo` usa `>` (crea il file), gli altri `>>` (accodano). Sia Rocky 9 sia Ubuntu 24.04 includono `sshd_config.d/*.conf` dal `sshd_config` principale.
+- **sudo**: la regola `NOPASSWD` dell'utente va in `/etc/sudoers.d/<user>` (con `>`, quindi il file viene creato da capo) con permessi `0440`, senza editare `/etc/sudoers`.
 ### Le differenze appianate dal template
 
 | Differenza | RedHat (Rocky 9) | Debian (Ubuntu 24.04) | Perché serve |
