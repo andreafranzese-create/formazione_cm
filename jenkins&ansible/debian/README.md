@@ -62,13 +62,13 @@ Perché ogni pacchetto:
 
 ```dockerfile
 RUN mkdir -p /var/run/sshd && \
-    sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    echo 'AllowUsers andrea' >> /etc/ssh/sshd_config
+    echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "AllowUsers andrea" >> /etc/ssh/sshd_config.d/10-ssh_config.conf
 ```
 
-Hardening dell'SSH, quattro decisioni:
+Hardening dell'SSH, scritto in un file di drop-in `/etc/ssh/sshd_config.d/10-ssh_config.conf` — `sshd_config` non viene toccato, è lui che include la directory `sshd_config.d`. Le direttive sono quattro:
 
 - **`/var/run/sshd`** — directory di runtime che `sshd` pretende di trovare: senza, il demone si rifiuta di partire.
 - **`PermitRootLogin no`** — niente login diretto come root.
@@ -78,14 +78,15 @@ Hardening dell'SSH, quattro decisioni:
 
 ```dockerfile
 RUN useradd --create-home --shell /bin/bash --groups sudo andrea && \
-    echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo "andrea ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/andrea && \
+    chmod 440 /etc/sudoers.d/andrea && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \
     chown andrea:andrea /home/andrea/.ssh
 ```
 
 - crea l'utente `andrea` con home e shell, nel gruppo `sudo`;
-- **`NOPASSWD:ALL`** — indispensabile: il playbook di deploy usa `become: true`, e siccome l'accesso è a chiave l'utente **non ha una password** da digitare al prompt di sudo. Senza questa riga il `become` si bloccherebbe.
+- **`NOPASSWD:ALL`** — il playbook di deploy usa `become: true`, e siccome l'accesso è a chiave l'utente **non ha una password** da digitare al prompt di sudo. Senza questa riga il `become` si bloccherebbe. La regola sta in un file dedicato `/etc/sudoers.d/andrea` — `/etc/sudoers` non viene toccato — con permessi `440`, che `sudo` pretende: se sono più larghi il file viene ignorato.
 - prepara `/home/andrea/.ssh` con i permessi che `sshd` esige (`700`, di proprietà dell'utente): se sono più larghi, `sshd` ignora la chiave e l'accesso fallisce in modo silenzioso.
 
 ```dockerfile
