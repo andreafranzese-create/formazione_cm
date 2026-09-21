@@ -5,13 +5,14 @@ RUN dnf install -y sudo openssh-server && \
 
 RUN ssh-keygen -A
 
-RUN sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    echo 'AllowUsers andrea' >> /etc/ssh/sshd_config
+RUN echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "AllowUsers andrea" >> /etc/ssh/sshd_config.d/10-ssh_config.conf
 
 RUN useradd --uid 1500 --create-home --shell /bin/bash --groups wheel andrea && \
-    echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo "andrea ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/andrea && \
+    chmod 440 /etc/sudoers.d/andrea && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \
     chown andrea:andrea /home/andrea/.ssh

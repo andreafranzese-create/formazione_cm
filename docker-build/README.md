@@ -81,17 +81,17 @@ RUN apt-get update && \
 
 ```dockerfile
 RUN mkdir -p /var/run/sshd && \
-    sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    echo 'AllowUsers andrea' >> /etc/ssh/sshd_config
+    echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "AllowUsers andrea" >> /etc/ssh/sshd_config.d/10-ssh_config.conf
 ```
 
 **`mkdir -p /var/run/sshd`** — `sshd` si rifiuta di partire se non trova questa cartella (la usa per la *privilege separation*, un meccanismo di sicurezza che gli fa girare le parti rischiose in un processo senza privilegi). Su una macchina normale la crea systemd al boot; in un container systemd non c'è, quindi va creata a mano.
 
-**I tre `sed`** modificano il file di configurazione `/etc/ssh/sshd_config`:
+**Il file di configurazione principale non viene toccato.** `/etc/ssh/sshd_config` resta quello dell'immagine base: le direttive vengono scritte in un file **drop-in**, `/etc/ssh/sshd_config.d/10-ssh_config.conf`, che `sshd` legge grazie alla riga `Include /etc/ssh/sshd_config.d/*.conf` presente in cima al file principale.
 
-| Riga modificata | Cosa ottieni |
+| Direttiva | Cosa ottieni |
 |---|---|
 | `PermitRootLogin no` | Nessuno può collegarsi in SSH direttamente come root. Per fare cose da amministratore bisogna entrare come `andrea` e usare `sudo` — così ogni azione privilegiata è tracciabile |
 | `PasswordAuthentication no` | Niente login con password: solo chiave. Rende inutili i tentativi di indovinare la password |
@@ -102,7 +102,8 @@ RUN mkdir -p /var/run/sshd && \
 
 ```dockerfile
 RUN useradd --uid 1500 --create-home --shell /bin/bash --groups sudo andrea && \
-    echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo "andrea ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/andrea && \
+    chmod 440 /etc/sudoers.d/andrea && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \
     chown andrea:andrea /home/andrea/.ssh
@@ -115,7 +116,11 @@ RUN useradd --uid 1500 --create-home --shell /bin/bash --groups sudo andrea && \
 - `--shell /bin/bash` gli assegna una shell interattiva vera.
 - `--groups sudo` lo mette nel gruppo `sudo`, che su Ubuntu è il gruppo degli amministratori.
 
-**La riga in `/etc/sudoers`** `andrea ALL=(ALL) NOPASSWD:ALL`: l'utente `andrea`, su qualsiasi host (`ALL=`), può impersonare qualsiasi utente (`(ALL)`), eseguendo qualsiasi comando (`:ALL`), **senza che gli venga chiesta la password** (`NOPASSWD`).
+**La regola sudo** `andrea ALL=(ALL) NOPASSWD:ALL`: l'utente `andrea`, su qualsiasi host (`ALL=`), può impersonare qualsiasi utente (`(ALL)`), eseguendo qualsiasi comando (`:ALL`), **senza che gli venga chiesta la password** (`NOPASSWD`).
+
+Anche qui `/etc/sudoers` non viene toccato: la regola finisce in un file a sé, `/etc/sudoers.d/andrea`, che `sudo` legge grazie alla riga `@includedir /etc/sudoers.d` in fondo al file principale. Un file separato si può aggiungere o rimuovere in blocco, e un errore di sintesi resta confinato lì invece di corrompere il `sudoers` di sistema — che, se diventa illeggibile, rende `sudo` inutilizzabile per tutti.
+
+**`chmod 440`** è obbligatorio: `sudo` **ignora** i file in `sudoers.d` che siano scrivibili da gruppo o da altri, o che non appartengano a root. Con i permessi di default lasciati da `echo` (`0644`) il file verrebbe comunque letto, ma `440` (sola lettura per root e per il suo gruppo) è la modalità che `sudo` si aspetta e l'unica che passa il controllo anche con le configurazioni più restrittive. Il proprietario è già root perché il layer viene eseguito come root.
 
 **`mkdir` + `chmod 700` + `chown`** preparano la cartella `.ssh`. Il `700` (leggibile/scrivibile solo dal proprietario): `sshd` ha un controllo chiamato *StrictModes* e, se trova `~/.ssh` scrivibile dal gruppo o dagli altri, **ignora la chiave** e il login fallisce con un laconico `Permission denied (publickey)`.
 
@@ -170,11 +175,13 @@ Senza host key `sshd` non parte. Su Ubuntu il pacchetto `openssh-server` le gene
 #### Layer 4 
 
 ```dockerfile
-RUN sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i -E 's/^#?PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    echo 'AllowUsers andrea' >> /etc/ssh/sshd_config
+RUN echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config.d/10-ssh_config.conf && \
+    echo "AllowUsers andrea" >> /etc/ssh/sshd_config.d/10-ssh_config.conf
 ```
+
+Stesso drop-in del Dockerfile Ubuntu, e per lo stesso motivo: `/etc/ssh/sshd_config` non viene modificato, le direttive stanno in `/etc/ssh/sshd_config.d/10-ssh_config.conf`. Anche su Rocky 9 il file principale contiene già l'`Include /etc/ssh/sshd_config.d/*.conf` in cima, quindi il meccanismo è identico nelle due distribuzioni.
 
 **Qui manca `mkdir -p /var/run/sshd`**. Quella cartella è una convenzione Debian/Ubuntu; su RHEL/Rocky la privilege separation directory è già gestita dal pacchetto e non va creata a mano.
 
@@ -182,7 +189,8 @@ RUN sed -i -E 's/^#?#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc
 
 ```dockerfile
 RUN useradd --uid 1500 --create-home --shell /bin/bash --groups wheel andrea && \
-    echo "andrea ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo "andrea ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/andrea && \
+    chmod 440 /etc/sudoers.d/andrea && \
     mkdir -p /home/andrea/.ssh && \
     chmod 700 /home/andrea/.ssh && \
     chown andrea:andrea /home/andrea/.ssh
@@ -193,7 +201,7 @@ RUN useradd --uid 1500 --create-home --shell /bin/bash --groups wheel andrea && 
 - famiglia **Debian/Ubuntu** → gruppo `sudo`
 - famiglia **RHEL/Rocky/Fedora/CentOS** → gruppo `wheel`
 
-`--uid 1500` invece è identico nei due Dockerfile: l'allineamento con l'UID dell'utente sull'host non dipende dalla distribuzione.
+`--uid 1500` invece è identico nei due Dockerfile: l'allineamento con l'UID dell'utente sull'host non dipende dalla distribuzione. Identico anche il resto del layer: la regola sudo va in `/etc/sudoers.d/andrea` con `chmod 440`, senza toccare `/etc/sudoers`, perché `@includedir /etc/sudoers.d` è presente anche nel `sudoers` di Rocky.
 
 ---
 
